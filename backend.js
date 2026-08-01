@@ -37,7 +37,7 @@ app.use("/api", apiLimiter);
 
 app.use("/storage", express.static(path.join(__dirname, "storage")));
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] }, maxHttpBufferSize: 1e8, transports: ["websocket", "polling"] });
+const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] }, maxHttpBufferSize: 1e8, transports: ["websocket", "polling"], addTrailingSlash: false });
 
 // --- Socket.IO connection rate limiting ---
 const socketConnections = new Map(); // IP -> count
