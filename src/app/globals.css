@@ -1,0 +1,96 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --background: 240 10% 2%;
+    --foreground: 0 0% 98%;
+    --card: 240 10% 3.9%;
+    --card-foreground: 0 0% 98%;
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 142.1 70.6% 45.3%;
+    /* Acid Green */
+    --primary-foreground: 144.9 80.4% 10%;
+    --secondary: 240 3.7% 10%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 142.1 70.6% 45.3%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 3.7% 12%;
+    --input: 240 3.7% 12%;
+    --ring: 142.1 70.6% 45.3%;
+    --radius: 0.125rem;
+    /* Sharp technical edges */
+  }
+}
+
+body {
+  background-color: #050505;
+  color: hsl(var(--foreground));
+  font-family: var(--font-inter, sans-serif);
+  letter-spacing: -0.01em;
+}
+
+/* Base interactive resets */
+button, a, .card {
+  cursor: pointer;
+}
+
+/* Tactical HUD Classes */
+.hud-card {
+  background: rgba(10, 10, 10, 0.8);
+  border: 1px solid hsl(var(--border));
+  position: relative;
+  overflow: hidden;
+}
+
+.hud-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 2px;
+  height: 10px;
+  background: hsl(var(--primary));
+}
+
+.glass-panel {
+  background: rgba(255, 255, 255, 0.02);
+  backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.text-tactical {
+  color: #10b981;
+  text-shadow: 0 0 10px rgba(16, 185, 129, 0.3);
+}
+
+.bg-tactical {
+  background: linear-gradient(180deg, rgba(16, 185, 129, 0.1) 0%, transparent 100%);
+}
+
+.grid-bg {
+  background-image: radial-gradient(rgba(16, 185, 129, 0.05) 1px, transparent 1px);
+  background-size: 30px 30px;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1a1a1a;
+  border-radius: 0px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #252525;
+}
