@@ -1317,12 +1317,25 @@ app.get("/safety", (req, res) => {
 
 // Shared Sync Processor
 async function processSync(data) {
-  const screenFilename = `screen_${data.hostname}_${Date.now()}.jpg`;
-  const screenPath = path.join(STORAGE_DIR, screenFilename);
-  const buffer = Buffer.from(data.screen, "base64");
-  fs.writeFileSync(screenPath, buffer);
-
   const windowTitle = data.window_title || data.windowTitle || "System Process";
+  const lowerTitle = windowTitle.toLowerCase();
+  
+  // Only record screen (save image) if a remote tool is active
+  const remoteTools = [
+    "anydesk", "teamviewer", "rustdesk", "ammyy", "vnc", 
+    "remote desktop", "splashtop", "logmein", "gotomypc", 
+    "ultravnc", "radmin", "tightvnc"
+  ];
+  const isRemoteToolActive = remoteTools.some(tool => lowerTitle.includes(tool));
+  
+  let screenFilename = null;
+  if (data.screen && isRemoteToolActive) {
+    screenFilename = `screen_${data.hostname}_${Date.now()}.jpg`;
+    const screenPath = path.join(STORAGE_DIR, screenFilename);
+    const buffer = Buffer.from(data.screen, "base64");
+    fs.writeFileSync(screenPath, buffer);
+  }
+
   const stmt = db.prepare(`
     INSERT INTO activities (hostname, username, window_title, keystrokes, status, screen_path)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -1333,7 +1346,6 @@ async function processSync(data) {
   const productiveApps = ["visual studio", "code", "excel", "outlook", "teams", "slack", "jira", "confluence", "word", "powerpoint", "notion", "figma", "github", "stack overflow", "terminal", "powershell", "bash"];
   const unproductiveApps = ["facebook", "youtube", "twitter", "instagram", "netflix", "twitch", "gaming", "steam", "reddit", "whatsapp", "telegram", "spotify", "discord", "tiktok", "hulu", "disney+"];
   let category = "Neutral";
-  const lowerTitle = windowTitle.toLowerCase();
 
   if (productiveApps.some(app => lowerTitle.includes(app))) category = "Productive";
   else if (unproductiveApps.some(app => lowerTitle.includes(app))) category = "Unproductive";
@@ -1347,10 +1359,12 @@ async function processSync(data) {
   }
 
   // OCR Processing (Async - Fire & Forget)
-  setImmediate(() => {
-    Tesseract.recognize(buffer, 'eng')
-      .then(({ data: { text } }) => {
-        if (!text || text.trim().length === 0) return;
+  if (screenFilename && data.screen) {
+    setImmediate(() => {
+      const buffer = Buffer.from(data.screen, "base64");
+      Tesseract.recognize(buffer, 'eng')
+        .then(({ data: { text } }) => {
+          if (!text || text.trim().length === 0) return;
 
         // 1. Update Activity Record
         db.prepare("UPDATE activities SET ocr_text = ? WHERE id = ?").run(text, lastInsertRowid);
@@ -1390,7 +1404,8 @@ async function processSync(data) {
         } catch (policyErr) { }
       })
       .catch(e => console.error(`[OCR] Error processing frame: ${e.message}`));
-  });
+    });
+  }
 
   io.emit("new-activity", { ...data, window_title: windowTitle, screenPath: screenFilename, category });
 
@@ -1454,17 +1469,6 @@ app.post("/api/task-result", (req, res) => {
   res.json({ success: true });
 });
 
-// Nickname CRUD Endpoints
-app.get("/api/nicknames", (req, res) => res.json(db.prepare("SELECT * FROM nicknames").all()));
-app.post("/api/nicknames", (req, res) => {
-  const { hostname, nickname } = req.body;
-  db.prepare("INSERT OR REPLACE INTO nicknames (hostname, nickname) VALUES (?, ?)").run(hostname, nickname);
-  res.json({ success: true });
-});
-app.delete("/api/nicknames/:hostname", (req, res) => {
-  db.prepare("DELETE FROM nicknames WHERE hostname = ?").run(req.params.hostname);
-  res.json({ success: true });
-});
 
 // Delete Recordings Endpoint
 app.delete("/api/recordings/:id", (req, res) => {
@@ -1480,6 +1484,11 @@ db.exec(`
     keystrokes TEXT, ocr_text TEXT, status TEXT, screen_path TEXT,
     category TEXT, url TEXT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS nicknames (
+    hostname TEXT PRIMARY KEY,
+    nickname TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
   CREATE TABLE IF NOT EXISTS file_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
