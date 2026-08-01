@@ -7,6 +7,7 @@ const nextConfig: NextConfig = {
   distDir: '.next',
   reactCompiler: true,
   outputFileTracingRoot: __dirname,
+  skipTrailingSlashRedirect: true,
   async rewrites() {
     return [
       {
