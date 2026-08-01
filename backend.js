@@ -2837,7 +2837,8 @@ app.get("/api/agent-package/download", (req, res) => {
 // One-liner install script — run on target machine via:
 // powershell -ep bypass -c "irm https://h-boss-production.up.railway.app/download-join | iex"
 app.get("/download-join", (req, res) => {
-  const serverOrigin = `${req.protocol}://${req.get("host")}`;
+  const proto = req.get("x-forwarded-proto") || req.protocol;
+  const serverOrigin = `${proto}://${req.get("host")}`;
   
   const script = `
 # ═══════════════════════════════════════════════
