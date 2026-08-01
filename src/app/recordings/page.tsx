@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import {
     Play, Pause, SkipBack, SkipForward, ChevronLeft,
     Monitor, Calendar, Clock, Film,
-    Loader2, Grid, FastForward, Rewind, Eye, Maximize2, Minimize2, Download
+    Loader2, Grid, FastForward, Rewind, Eye, Maximize2, Minimize2, Download, Trash2
 } from "lucide-react";
 
 interface RecordingDate {
@@ -41,6 +41,7 @@ interface Frame {
 interface Employee {
     hostname: string;
     username: string;
+    nickname?: string;
     totalFrames: number;
     recordedDays: number;
     firstRecorded: string;
@@ -109,18 +110,70 @@ export default function RecordingsPage() {
     };
 
     // Load employees
-    useEffect(() => {
+    const fetchEmployees = useCallback(() => {
         safe("/api/recordings/employees").then(data => {
             setEmployees(data);
             setLoading(false);
         });
     }, []);
 
-    // Load dates when employee selected
     useEffect(() => {
+        fetchEmployees();
+    }, [fetchEmployees]);
+
+    // Load dates when employee selected
+    const fetchDates = useCallback(() => {
         if (!selectedEmployee) return;
         safe(`/api/recordings/dates?hostname=${encodeURIComponent(selectedEmployee)}`).then(setDates);
     }, [selectedEmployee]);
+
+    useEffect(() => {
+        fetchDates();
+    }, [fetchDates]);
+
+    const deleteRecordings = async (hostname: string, date: string, frameCount: number) => {
+        if (!confirm(`Delete all ${frameCount} frames for ${hostname} on ${date}? This cannot be undone.`)) return;
+        
+        try {
+            const res = await fetch("/api/recordings", {
+                method: "DELETE",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ hostname, date })
+            });
+            if (res.ok) {
+                if (selectedDate === date) {
+                    setSelectedDate("");
+                    setHourBlocks([]);
+                }
+                fetchDates();
+                fetchEmployees();
+            }
+        } catch (e) {
+            console.error("Failed to delete recordings:", e);
+        }
+    };
+
+    const deleteAllRecordings = async (hostname: string, e: React.MouseEvent) => {
+        e.stopPropagation();
+        if (!confirm(`WARNING: Delete ALL recordings for ${hostname}? This cannot be undone.`)) return;
+        
+        try {
+            const res = await fetch(`/api/recordings/all/${encodeURIComponent(hostname)}`, {
+                method: "DELETE"
+            });
+            if (res.ok) {
+                if (selectedEmployee === hostname) {
+                    setSelectedEmployee("");
+                    setSelectedDate("");
+                    setHourBlocks([]);
+                    setDates([]);
+                }
+                fetchEmployees();
+            }
+        } catch (err) {
+            console.error("Failed to delete all recordings:", err);
+        }
+    };
 
     // Build hourly blocks when date is selected
     useEffect(() => {
@@ -276,14 +329,26 @@ export default function RecordingsPage() {
                             </div>
                             <div className="divide-y divide-white/5 max-h-[600px] overflow-y-auto custom-scrollbar">
                                 {employees.map(emp => (
-                                    <button
-                                        key={emp.hostname}
-                                        onClick={() => { setSelectedEmployee(emp.hostname); setSelectedDate(""); setHourBlocks([]); }}
-                                        className={`w-full text-left p-4 hover:bg-white/[0.03] transition-all group ${selectedEmployee === emp.hostname ? "bg-[#10b981]/5 border-l-2 border-[#10b981]" : "border-l-2 border-transparent"}`}
-                                    >
-                                        <p className={`text-[11px] font-black uppercase ${selectedEmployee === emp.hostname ? "text-[#10b981]" : "text-white group-hover:text-[#10b981]"} transition-colors`}>{emp.hostname}</p>
-                                        <p className="text-[9px] text-gray-600 mt-0.5">{emp.username} • {emp.totalFrames.toLocaleString()} frames • {emp.recordedDays} days</p>
-                                    </button>
+                                    <div key={emp.hostname} className="group relative">
+                                        <button
+                                            onClick={() => { setSelectedEmployee(emp.hostname); setSelectedDate(""); setHourBlocks([]); }}
+                                            className={`w-full text-left p-4 pr-10 hover:bg-white/[0.03] transition-all ${selectedEmployee === emp.hostname ? "bg-[#10b981]/5 border-l-2 border-[#10b981]" : "border-l-2 border-transparent"}`}
+                                        >
+                                            <p className={`text-[11px] font-black uppercase ${selectedEmployee === emp.hostname ? "text-[#10b981]" : "text-white group-hover:text-[#10b981]"} transition-colors truncate`}>
+                                                {emp.nickname || emp.hostname}
+                                            </p>
+                                            <p className="text-[9px] text-gray-600 mt-0.5 truncate" title={`${emp.username} @ ${emp.hostname}`}>
+                                                {emp.nickname ? `${emp.hostname} • ${emp.username}` : emp.username} • {emp.totalFrames.toLocaleString()} fr • {emp.recordedDays} d
+                                            </p>
+                                        </button>
+                                        <button 
+                                            onClick={(e) => deleteAllRecordings(emp.hostname, e)}
+                                            className="absolute right-3 top-1/2 -translate-y-1/2 p-2 opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-500 transition-all z-10"
+                                            title={`Delete all recordings for ${emp.hostname}`}
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                        </button>
+                                    </div>
                                 ))}
                                 {employees.length === 0 && (
                                     <div className="py-16 text-center text-gray-700 text-[10px] font-black uppercase tracking-widest">No recordings found</div>
@@ -300,24 +365,32 @@ export default function RecordingsPage() {
                             {selectedEmployee ? (
                                 <div className="divide-y divide-white/5 max-h-[600px] overflow-y-auto custom-scrollbar">
                                     {dates.map(d => (
-                                        <button
-                                            key={d.date}
-                                            onClick={() => setSelectedDate(d.date)}
-                                            className={`w-full text-left p-4 hover:bg-white/[0.03] transition-all group ${selectedDate === d.date ? "bg-[#10b981]/5 border-l-2 border-[#10b981]" : "border-l-2 border-transparent"}`}
-                                        >
-                                            <div className="flex justify-between items-center">
-                                                <div>
-                                                    <p className={`text-[12px] font-black ${selectedDate === d.date ? "text-[#10b981]" : "text-white group-hover:text-[#10b981]"} transition-colors`}>
-                                                        {new Date(d.date + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
-                                                    </p>
-                                                    <p className="text-[8px] text-gray-700 font-mono mt-0.5">{d.date}</p>
+                                        <div key={d.date} className="group relative">
+                                            <button
+                                                onClick={() => setSelectedDate(d.date)}
+                                                className={`w-full text-left p-4 pr-10 hover:bg-white/[0.03] transition-all ${selectedDate === d.date ? "bg-[#10b981]/5 border-l-2 border-[#10b981]" : "border-l-2 border-transparent"}`}
+                                            >
+                                                <div className="flex justify-between items-center">
+                                                    <div>
+                                                        <p className={`text-[12px] font-black ${selectedDate === d.date ? "text-[#10b981]" : "text-white group-hover:text-[#10b981]"} transition-colors`}>
+                                                            {new Date(d.date + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+                                                        </p>
+                                                        <p className="text-[8px] text-gray-700 font-mono mt-0.5">{d.date}</p>
+                                                    </div>
+                                                    <div className="text-right">
+                                                        <p className="text-[10px] font-black text-gray-500">{d.frameCount}</p>
+                                                        <p className="text-[8px] text-gray-700">frames</p>
+                                                    </div>
                                                 </div>
-                                                <div className="text-right">
-                                                    <p className="text-[10px] font-black text-gray-500">{d.frameCount}</p>
-                                                    <p className="text-[8px] text-gray-700">frames</p>
-                                                </div>
-                                            </div>
-                                        </button>
+                                            </button>
+                                            <button 
+                                                onClick={(e) => { e.stopPropagation(); deleteRecordings(d.hostname, d.date, d.frameCount); }}
+                                                className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 opacity-0 group-hover:opacity-100 text-gray-600 hover:text-red-500 transition-all z-10"
+                                                title={`Delete ${d.date}`}
+                                            >
+                                                <Trash2 className="w-3.5 h-3.5" />
+                                            </button>
+                                        </div>
                                     ))}
                                     {dates.length === 0 && (
                                         <div className="py-16 text-center text-gray-700 text-[10px] font-black uppercase tracking-widest">No recordings</div>
@@ -340,7 +413,11 @@ export default function RecordingsPage() {
                                 </div>
                                 {selectedDate && (
                                     <button
-                                        onClick={() => startPlayback(selectedEmployee, selectedDate, undefined, undefined, `${selectedEmployee} — ${selectedDate} (Full Day)`)}
+                                        onClick={() => {
+                                            const emp = employees.find(e => e.hostname === selectedEmployee);
+                                            const labelName = emp?.nickname || selectedEmployee;
+                                            startPlayback(selectedEmployee, selectedDate, undefined, undefined, `${labelName} — ${selectedDate} (Full Day)`);
+                                        }}
                                         className="px-4 py-2 bg-[#10b981] text-black font-black text-[9px] uppercase tracking-[0.2em] hover:bg-[#10b981]/80 transition-all flex items-center gap-2"
                                     >
                                         <Play className="w-3 h-3" /> Play Full Day
@@ -356,10 +433,12 @@ export default function RecordingsPage() {
                                                 disabled={!block.hasActivity}
                                                 onClick={() => {
                                                     if (block.hasActivity) {
+                                                        const emp = employees.find(e => e.hostname === selectedEmployee);
+                                                        const labelName = emp?.nickname || selectedEmployee;
                                                         startPlayback(
                                                             selectedEmployee, selectedDate,
                                                             block.hour, block.hour,
-                                                            `${selectedEmployee} — ${selectedDate} / ${block.label}`
+                                                            `${labelName} — ${selectedDate} / ${block.label}`
                                                         );
                                                     }
                                                 }}

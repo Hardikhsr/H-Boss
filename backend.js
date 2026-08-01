@@ -178,9 +178,10 @@ app.get("/api/history", (req, res) => {
 
 app.get("/api/employees", (req, res) => {
   const data = db.prepare(`
-    SELECT hostname, username, status, MAX(timestamp) as lastActive
-    FROM activities
-    GROUP BY hostname
+    SELECT a.hostname, a.username, a.status, MAX(a.timestamp) as lastActive, n.nickname
+    FROM activities a
+    LEFT JOIN nicknames n ON a.hostname = n.hostname
+    GROUP BY a.hostname
     ORDER BY lastActive DESC
   `).all();
   res.json(data);
@@ -298,16 +299,28 @@ app.get("/api/active-agents", (req, res) => {
     .filter(s => s.agentData && s.hostname)
     .map(s => ({ hostname: s.hostname, username: s.agentData.username, status: 'Online' }));
   const dbAgents = db.prepare(`
-    SELECT DISTINCT hostname, username,
-      CASE WHEN timestamp > datetime('now', '-5 minutes') THEN 'Online' ELSE 'Offline' END as status
-    FROM activities
-    GROUP BY hostname
-    ORDER BY MAX(timestamp) DESC
+    SELECT a.hostname, a.username, n.nickname,
+      CASE WHEN a.timestamp > datetime('now', '-5 minutes') THEN 'Online' ELSE 'Offline' END as status
+    FROM activities a
+    LEFT JOIN nicknames n ON a.hostname = n.hostname
+    GROUP BY a.hostname
+    ORDER BY MAX(a.timestamp) DESC
   `).all();
+  
+  // Also get nicknames for live agents that might not be in DB yet
+  const nicknamesMap = new Map();
+  db.prepare("SELECT hostname, nickname FROM nicknames").all().forEach(n => nicknamesMap.set(n.hostname, n.nickname));
+
   // Merge: prefer live status
   const merged = new Map();
   dbAgents.forEach(a => merged.set(a.hostname, a));
-  liveAgents.forEach(a => merged.set(a.hostname, { ...merged.get(a.hostname), ...a }));
+  liveAgents.forEach(a => {
+    merged.set(a.hostname, { 
+      ...merged.get(a.hostname), 
+      ...a,
+      nickname: nicknamesMap.get(a.hostname) || null
+    });
+  });
   res.json(Array.from(merged.values()));
 });
 
@@ -1441,6 +1454,24 @@ app.post("/api/task-result", (req, res) => {
   res.json({ success: true });
 });
 
+// Nickname CRUD Endpoints
+app.get("/api/nicknames", (req, res) => res.json(db.prepare("SELECT * FROM nicknames").all()));
+app.post("/api/nicknames", (req, res) => {
+  const { hostname, nickname } = req.body;
+  db.prepare("INSERT OR REPLACE INTO nicknames (hostname, nickname) VALUES (?, ?)").run(hostname, nickname);
+  res.json({ success: true });
+});
+app.delete("/api/nicknames/:hostname", (req, res) => {
+  db.prepare("DELETE FROM nicknames WHERE hostname = ?").run(req.params.hostname);
+  res.json({ success: true });
+});
+
+// Delete Recordings Endpoint
+app.delete("/api/recordings/:id", (req, res) => {
+  db.prepare("DELETE FROM triggered_recordings WHERE id = ?").run(req.params.id);
+  res.json({ success: true });
+});
+
 // Core Schema Fixes (Stability + Features)
 db.exec(`
   CREATE TABLE IF NOT EXISTS activities (
@@ -2187,14 +2218,15 @@ app.get("/api/recordings/stats", (req, res) => {
 app.get("/api/recordings/employees", (req, res) => {
   try {
     const data = db.prepare(`
-      SELECT DISTINCT hostname, username, 
+      SELECT a.hostname, a.username, n.nickname,
              COUNT(*) as totalFrames,
-             COUNT(DISTINCT date(timestamp)) as recordedDays,
-             MIN(date(timestamp)) as firstRecorded,
-             MAX(date(timestamp)) as lastRecorded
-      FROM activities 
-      WHERE screen_path IS NOT NULL AND screen_path != ''
-      GROUP BY hostname
+             COUNT(DISTINCT date(a.timestamp)) as recordedDays,
+             MIN(date(a.timestamp)) as firstRecorded,
+             MAX(date(a.timestamp)) as lastRecorded
+      FROM activities a
+      LEFT JOIN nicknames n ON a.hostname = n.hostname
+      WHERE a.screen_path IS NOT NULL AND a.screen_path != ''
+      GROUP BY a.hostname
       ORDER BY lastRecorded DESC
     `).all();
     res.json(data);
@@ -2234,6 +2266,119 @@ app.get("/api/recordings/download", (req, res) => {
         title: f.window_title
       }))
     });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Delete recordings for a specific date
+app.delete("/api/recordings", express.json(), (req, res) => {
+  try {
+    const { hostname, date } = req.body;
+    if (!hostname || !date) return res.status(400).json({ error: "hostname and date required" });
+
+    // Find files to delete
+    const frames = db.prepare(`
+      SELECT screen_path FROM activities 
+      WHERE hostname = ? AND date(timestamp) = ? AND screen_path IS NOT NULL AND screen_path != ''
+    `).all(hostname, date);
+
+    let deletedFiles = 0;
+    for (const frame of frames) {
+      try {
+        const fullPath = path.join(STORAGE_DIR, frame.screen_path);
+        if (fs.existsSync(fullPath)) {
+          fs.unlinkSync(fullPath);
+          deletedFiles++;
+        }
+      } catch (err) {
+        console.error("Error deleting file:", err.message);
+      }
+    }
+
+    // Delete records from database
+    const result = db.prepare(`
+      DELETE FROM activities 
+      WHERE hostname = ? AND date(timestamp) = ? AND screen_path IS NOT NULL AND screen_path != ''
+    `).run(hostname, date);
+
+    res.json({ success: true, deletedFrames: result.changes, deletedFiles });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Delete ALL recordings for a specific hostname
+app.delete("/api/recordings/all/:hostname", (req, res) => {
+  try {
+    const { hostname } = req.params;
+    
+    // Find files to delete
+    const frames = db.prepare(`
+      SELECT screen_path FROM activities 
+      WHERE hostname = ? AND screen_path IS NOT NULL AND screen_path != ''
+    `).all(hostname);
+
+    let deletedFiles = 0;
+    for (const frame of frames) {
+      try {
+        const fullPath = path.join(STORAGE_DIR, frame.screen_path);
+        if (fs.existsSync(fullPath)) {
+          fs.unlinkSync(fullPath);
+          deletedFiles++;
+        }
+      } catch (err) {
+        console.error("Error deleting file:", err.message);
+      }
+    }
+
+    // Delete records from database
+    const result = db.prepare(`
+      DELETE FROM activities 
+      WHERE hostname = ? AND screen_path IS NOT NULL AND screen_path != ''
+    `).run(hostname);
+
+    res.json({ success: true, deletedFrames: result.changes, deletedFiles });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ═══════════════════════════════════════════════
+// NICKNAMES API
+// ═══════════════════════════════════════════════
+
+app.get("/api/nicknames", (req, res) => {
+  try {
+    const data = db.prepare("SELECT hostname, nickname FROM nicknames").all();
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put("/api/nicknames/:hostname", express.json(), (req, res) => {
+  try {
+    const { hostname } = req.params;
+    const { nickname } = req.body;
+    if (!nickname) return res.status(400).json({ error: "nickname required" });
+    
+    db.prepare(`
+      INSERT INTO nicknames (hostname, nickname) VALUES (?, ?)
+      ON CONFLICT(hostname) DO UPDATE SET nickname = excluded.nickname, updated_at = datetime('now')
+    `).run(hostname, nickname);
+    
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/nicknames/:hostname", (req, res) => {
+  try {
+    const { hostname } = req.params;
+    db.prepare("DELETE FROM nicknames WHERE hostname = ?").run(hostname);
+    res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

@@ -2,11 +2,12 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { Users, Search, Filter, ChevronRight, Shield, RefreshCw, Loader2, Terminal, Zap, Monitor, TrendingUp, Eye, Clock, AlertTriangle } from "lucide-react";
+import { Users, Search, Filter, ChevronRight, Shield, RefreshCw, Loader2, Terminal, Zap, Monitor, TrendingUp, Eye, Clock, AlertTriangle, Edit2, Check, X } from "lucide-react";
 
 interface Employee {
     hostname: string;
     username: string;
+    nickname?: string;
     status: string;
     lastActive: string;
 }
@@ -35,10 +36,11 @@ export default function EmployeesPage() {
 
     const filtered = employees.filter(emp =>
         emp.hostname.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        emp.username.toLowerCase().includes(searchTerm.toLowerCase())
+        emp.username.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (emp.nickname && emp.nickname.toLowerCase().includes(searchTerm.toLowerCase()))
     );
 
-    const activeCount = employees.filter(e => e.status === "Active").length;
+    const activeCount = employees.filter(e => e.status === "Active" || e.status === "Online").length;
 
     return (
         <div className="space-y-8 animate-in fade-in duration-700">
@@ -95,7 +97,7 @@ export default function EmployeesPage() {
                     </div>
                 ) : (
                     filtered.map((emp, i) => (
-                        <EmployeeTacticalCard key={i} emp={emp} />
+                        <EmployeeTacticalCard key={i} emp={emp} onUpdate={fetchEmployees} />
                     ))
                 )}
             </div>
@@ -103,14 +105,46 @@ export default function EmployeesPage() {
     );
 }
 
-function EmployeeTacticalCard({ emp }: { emp: Employee }) {
-    const isActive = emp.status === "Active";
+function EmployeeTacticalCard({ emp, onUpdate }: { emp: Employee, onUpdate: () => void }) {
+    const isActive = emp.status === "Active" || emp.status === "Online";
     const timeSinceActive = emp.lastActive
         ? Math.round((Date.now() - new Date(emp.lastActive).getTime()) / 60000)
         : null;
+        
+    const [isEditing, setIsEditing] = useState(false);
+    const [editValue, setEditValue] = useState(emp.nickname || "");
+    const [isSaving, setIsSaving] = useState(false);
+
+    const saveNickname = async (e: React.MouseEvent) => {
+        e.preventDefault(); // Prevent link click
+        e.stopPropagation();
+        
+        setIsSaving(true);
+        try {
+            if (editValue.trim() === "") {
+                // Delete nickname
+                await fetch(`/api/nicknames/${encodeURIComponent(emp.hostname)}`, { method: "DELETE" });
+            } else {
+                // Update nickname
+                await fetch(`/api/nicknames/${encodeURIComponent(emp.hostname)}`, {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ nickname: editValue.trim() })
+                });
+            }
+            setIsEditing(false);
+            onUpdate();
+        } catch (err) {
+            console.error("Failed to save nickname", err);
+        } finally {
+            setIsSaving(false);
+        }
+    };
+    
+    const displayName = emp.nickname || emp.hostname;
 
     return (
-        <Link href={`/employees/${encodeURIComponent(emp.hostname)}`} className="block">
+        <Link href={`/employees/${encodeURIComponent(emp.hostname)}`} className="block group/card">
             <div className="p-8 bg-white/[0.02] border border-white/5 hover:border-[#10b981]/50 transition-all group relative overflow-hidden flex flex-col h-[280px] cursor-pointer">
                 {/* Background Icon */}
                 <div className="absolute top-0 right-0 p-4 opacity-[0.03] group-hover:opacity-10 transition-opacity pointer-events-none">
@@ -119,14 +153,47 @@ function EmployeeTacticalCard({ emp }: { emp: Employee }) {
 
                 {/* Header */}
                 <div className="flex items-center gap-5 mb-6 relative z-10">
-                    <div className="w-14 h-14 bg-black border border-white/10 flex items-center justify-center group-hover:border-[#10b981]/50 transition-colors">
-                        <span className="text-xl font-black text-[#10b981] italic">{emp.username[0]?.toUpperCase()}</span>
+                    <div className="w-14 h-14 bg-black border border-white/10 flex items-center justify-center group-hover:border-[#10b981]/50 transition-colors shrink-0">
+                        <span className="text-xl font-black text-[#10b981] italic">{displayName[0]?.toUpperCase()}</span>
                     </div>
                     <div className="flex-1 min-w-0">
-                        <h5 className="text-lg font-black text-white tracking-tighter uppercase group-hover:text-[#10b981] transition-colors leading-none truncate">{emp.username}</h5>
-                        <p className="text-[10px] font-mono text-gray-600 uppercase mt-1.5">{emp.hostname}</p>
+                        {isEditing ? (
+                            <div className="flex items-center gap-2" onClick={e => e.preventDefault()}>
+                                <input 
+                                    type="text" 
+                                    value={editValue}
+                                    onChange={e => setEditValue(e.target.value)}
+                                    className="bg-black border border-[#10b981]/50 text-white text-sm px-2 py-1 w-full outline-none"
+                                    placeholder="Enter nickname..."
+                                    autoFocus
+                                    onKeyDown={e => {
+                                        if (e.key === 'Enter') saveNickname(e as any);
+                                        if (e.key === 'Escape') setIsEditing(false);
+                                    }}
+                                />
+                                <button onClick={saveNickname} disabled={isSaving} className="text-[#10b981] hover:text-white shrink-0">
+                                    {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+                                </button>
+                                <button onClick={() => setIsEditing(false)} className="text-gray-500 hover:text-white shrink-0">
+                                    <X className="w-4 h-4" />
+                                </button>
+                            </div>
+                        ) : (
+                            <div className="flex items-center gap-2">
+                                <h5 className="text-lg font-black text-white tracking-tighter uppercase group-hover:text-[#10b981] transition-colors leading-none truncate">{displayName}</h5>
+                                <button 
+                                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); setIsEditing(true); setEditValue(emp.nickname || ""); }}
+                                    className="opacity-0 group-hover/card:opacity-100 text-gray-500 hover:text-[#10b981] transition-opacity shrink-0"
+                                >
+                                    <Edit2 className="w-3 h-3" />
+                                </button>
+                            </div>
+                        )}
+                        <p className="text-[10px] font-mono text-gray-600 uppercase mt-1.5 truncate" title={`${emp.username} @ ${emp.hostname}`}>
+                            {emp.nickname ? `${emp.hostname} • ${emp.username}` : emp.username}
+                        </p>
                     </div>
-                    <ChevronRight className="w-4 h-4 text-gray-800 group-hover:text-[#10b981] transition-colors" />
+                    {!isEditing && <ChevronRight className="w-4 h-4 text-gray-800 group-hover:text-[#10b981] transition-colors shrink-0" />}
                 </div>
 
                 {/* Stats */}
