@@ -26,6 +26,10 @@ const nextConfig: NextConfig = {
         destination: `${BACKEND_URL}/download-join`,
       },
       {
+        source: '/socket.io',
+        destination: `${BACKEND_URL}/socket.io`,
+      },
+      {
         source: '/socket.io/:path*',
         destination: `${BACKEND_URL}/socket.io/:path*`,
       },
