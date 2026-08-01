@@ -42,11 +42,10 @@ export default function LiveView() {
         let mounted = true;
         const initSocket = async () => {
             const { io } = await import("socket.io-client");
-            const s = io("http://localhost:4000", {
+            const s = io({
                 reconnection: true,
                 reconnectionDelay: 2000,
-                reconnectionAttempts: Infinity,
-                transports: ["websocket"]  // Websocket only — prevents double connections
+                reconnectionAttempts: Infinity
             });
             if (!mounted) return;
             socketRef.current = s;

@@ -7,7 +7,7 @@ import {
   Clock, FileText, Search, Terminal, Activity,
   Calendar, TrendingUp, Briefcase, Film,
   Brain, Target, ClipboardCheck, Globe, MessageSquare,
-  Keyboard, Timer
+  Keyboard, Timer, UserCog
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -37,11 +37,14 @@ const menuItems: MenuItem[] = [
   { divider: "Tools" },
   { icon: Search, label: "OCR Search", href: "/ocr" },
   { icon: FileText, label: "Reports", href: "/reports" },
+  { icon: UserCog, label: "Profiles", href: "/profiles" },
   { icon: Settings, label: "Settings", href: "/settings" },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
+  if (pathname === "/login") return null;
+
   return (
     <aside className="fixed left-0 top-0 h-screen w-[240px] bg-[#0a0a0b] border-r border-white/5 flex flex-col z-50">
       {/* Logo */}

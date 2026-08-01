@@ -25,7 +25,11 @@ const nextConfig: NextConfig = {
         source: '/download-join',
         destination: `${BACKEND_URL}/download-join`,
       },
-      // NOTE: socket.io clients connect directly to :4000, no proxy needed
+      {
+        source: '/socket.io/:path*',
+        destination: `${BACKEND_URL}/socket.io/:path*`,
+      },
+      // NOTE: Next.js handles HTTP long-polling for socket.io via this proxy on Railway
     ];
   },
 };
