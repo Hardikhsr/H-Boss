@@ -2885,6 +2885,7 @@ try {
         Write-Host "        Upload it via: POST $SERVER_URL/api/agent-package/upload" -ForegroundColor DarkGray
         exit 1
     }
+    Unblock-File -Path $TEMP_ZIP -ErrorAction SilentlyContinue
 } catch {
     Write-Host "[ERROR] Download failed: $_" -ForegroundColor Red
     exit 1
@@ -2912,6 +2913,7 @@ if ($exeFile) { $agentRoot = $exeFile.DirectoryName }
 elseif (Test-Path "$TEMP_EXTRACT\\node.exe") { $agentRoot = $TEMP_EXTRACT }
 
 Copy-Item -Path "$agentRoot\\*" -Destination $INSTALL_DIR -Recurse -Force
+Get-ChildItem -Path $INSTALL_DIR -Recurse | Unblock-File -ErrorAction SilentlyContinue
 
 # Set up binary
 if (Test-Path "$INSTALL_DIR\\teram_agent.exe") {
