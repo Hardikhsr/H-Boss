@@ -2937,6 +2937,7 @@ if ($hasIndex) {
 }
 
 $vbsContent = @"
+On Error Resume Next
 Set W = CreateObject("WScript.Shell")
 W.CurrentDirectory = "$INSTALL_DIR"
 Do
