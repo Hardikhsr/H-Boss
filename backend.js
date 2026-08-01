@@ -2792,12 +2792,6 @@ app.patch("/api/admins/:id", requireAuth, requireSuperAdmin, (req, res) => {
   }
 });
 
-// Catch-all: Unknown API routes return JSON 404 (not raw text crash)
-// Express 5 requires named splat params instead of bare *
-app.all("/api/{*path}", (req, res) => {
-  res.status(404).json({ error: `API route not found: ${req.method} ${req.url}`, data: [] });
-});
-
 // ═══════════════════════════════════════════════
 // REMOTE AGENT DEPLOYMENT — One-Command Install
 // ═══════════════════════════════════════════════
