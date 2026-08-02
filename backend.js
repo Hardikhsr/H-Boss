@@ -179,14 +179,36 @@ app.get("/api/history", (req, res) => {
 });
 
 app.get("/api/employees", (req, res) => {
-  const data = db.prepare(`
-    SELECT a.hostname, a.username, a.status, MAX(a.timestamp) as lastActive, n.nickname
+  const dbEmployees = db.prepare(`
+    SELECT a.hostname, a.username,
+      CASE WHEN MAX(a.timestamp) > datetime('now', '-5 minutes') THEN 'Online' ELSE 'Offline' END as status,
+      MAX(a.timestamp) as lastActive, n.nickname
     FROM activities a
     LEFT JOIN nicknames n ON a.hostname = n.hostname
     GROUP BY a.hostname
     ORDER BY lastActive DESC
   `).all();
-  res.json(data);
+
+  const liveSockets = Array.from(io.sockets.sockets.values()).filter(s => s.agentData && s.hostname);
+  const employeeMap = new Map();
+  dbEmployees.forEach(e => employeeMap.set(e.hostname, e));
+
+  liveSockets.forEach(s => {
+    const existing = employeeMap.get(s.hostname);
+    if (existing) {
+      existing.status = 'Online';
+    } else {
+      employeeMap.set(s.hostname, {
+        hostname: s.hostname,
+        username: s.agentData.username || "Unknown",
+        status: 'Online',
+        lastActive: new Date().toISOString(),
+        nickname: null
+      });
+    }
+  });
+
+  res.json(Array.from(employeeMap.values()));
 });
 
 app.get("/api/stats", (req, res) => {
@@ -1270,30 +1292,23 @@ app.get("/safety", (req, res) => {
 
 // Shared Sync Processor
 async function processSync(data) {
-  const windowTitle = data.window_title || data.windowTitle || "System Process";
-  const lowerTitle = windowTitle.toLowerCase();
-  
-  // Only record screen (save image) if a remote tool is active
-  const remoteTools = [
-    "anydesk", "teamviewer", "rustdesk", "ammyy", "vnc", 
-    "remote desktop", "splashtop", "logmein", "gotomypc", 
-    "ultravnc", "radmin", "tightvnc"
-  ];
-  const isRemoteToolActive = remoteTools.some(tool => lowerTitle.includes(tool));
-  
-  let screenFilename = null;
-  if (data.screen && isRemoteToolActive) {
-    screenFilename = `screen_${data.hostname}_${Date.now()}.jpg`;
-    const screenPath = path.join(STORAGE_DIR, screenFilename);
-    const buffer = Buffer.from(data.screen, "base64");
-    fs.writeFileSync(screenPath, buffer);
-  }
+  try {
+    const windowTitle = data.window_title || data.windowTitle || "System Process";
+    const lowerTitle = windowTitle.toLowerCase();
+    
+    let screenFilename = null;
+    if (data.screen) {
+      screenFilename = `screen_${data.hostname}_${Date.now()}.jpg`;
+      const screenPath = path.join(STORAGE_DIR, screenFilename);
+      const buffer = Buffer.from(data.screen, "base64");
+      fs.writeFileSync(screenPath, buffer);
+    }
 
-  const stmt = db.prepare(`
-    INSERT INTO activities (hostname, username, window_title, keystrokes, status, screen_path)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-  const { lastInsertRowid } = stmt.run(data.hostname, data.username, windowTitle, data.keystrokes || "", data.status || "Active", screenFilename);
+    const stmt = db.prepare(`
+      INSERT INTO activities (hostname, username, window_title, keystrokes, status, screen_path)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const { lastInsertRowid } = stmt.run(data.hostname || "Unknown", data.username || "User", windowTitle, data.keystrokes || "", data.status || "Active", screenFilename);
 
   // Productivity Categorization (Enhanced)
   const productiveApps = ["visual studio", "code", "excel", "outlook", "teams", "slack", "jira", "confluence", "word", "powerpoint", "notion", "figma", "github", "stack overflow", "terminal", "powershell", "bash"];
@@ -1369,6 +1384,9 @@ async function processSync(data) {
       frame: data.screen,
       resolution: data.resolution || { width: 1920, height: 1080 }
     });
+  }
+  } catch (err) {
+    console.error("[SYNC ERROR]", err.message);
   }
 }
 
