@@ -7,7 +7,7 @@ import {
   Clock, FileText, Search, Terminal, Activity,
   Calendar, TrendingUp, Briefcase, Film,
   Brain, Target, ClipboardCheck, Globe, MessageSquare,
-  Keyboard, Timer, UserCog
+  Keyboard, Timer, UserCog, LogOut
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -92,11 +92,21 @@ export function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="p-4 border-t border-white/5">
+      <div className="p-4 border-t border-white/5 flex items-center justify-between">
         <div className="flex items-center gap-3 px-3">
           <div className="w-1.5 h-1.5 bg-[#10b981] shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
           <span className="text-[8px] font-black text-gray-600 uppercase tracking-[0.3em]">System Active</span>
         </div>
+        <button
+          onClick={async () => {
+            await fetch("/api/auth/logout", { method: "POST" });
+            window.location.href = "/login";
+          }}
+          className="p-2 text-gray-600 hover:text-red-500 hover:bg-white/[0.03] rounded transition-colors"
+          title="Logout"
+        >
+          <LogOut className="w-3.5 h-3.5" />
+        </button>
       </div>
     </aside>
   );

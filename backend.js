@@ -2692,6 +2692,65 @@ const requireSuperAdmin = (req, res, next) => {
 };
 
 app.post("/api/auth/login", async (req, res) => {
+  const { username, password } = req.body;
+  if (!username || !password) return res.status(400).json({ error: "Missing credentials" });
+  try {
+    const user = db.prepare("SELECT * FROM admins WHERE username = ?").get(username);
+    if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+      return res.status(401).json({ error: "Invalid credentials" });
+    }
+    const token = await new SignJWT({ id: user.id, username: user.username, role: user.role })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setExpirationTime('24h')
+      .sign(JWT_SECRET);
+    
+    res.cookie("auth_token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 24 * 60 * 60 * 1000,
+      path: "/"
+    });
+    res.json({ success: true, user: { username: user.username, role: user.role } });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  res.cookie("auth_token", "", { maxAge: 0, path: "/" });
+  res.json({ success: true });
+});
+
+app.get("/api/auth/me", requireAuth, (req, res) => {
+  res.json({ user: req.user });
+});
+
+app.get("/api/admins", requireAuth, requireSuperAdmin, (req, res) => {
+  const admins = db.prepare("SELECT id, username, role, created_at FROM admins").all();
+  res.json(admins);
+});
+
+app.post("/api/admins", requireAuth, requireSuperAdmin, (req, res) => {
+  const { username, password, role } = req.body;
+  if (!username || !password || !role) return res.status(400).json({ error: "Missing fields" });
+  try {
+    const hash = bcrypt.hashSync(password, 10);
+    db.prepare("INSERT INTO admins (username, password_hash, role) VALUES (?, ?, ?)").run(username, hash, role);
+    res.json({ success: true });
+  } catch (e) {
+    if (e.message.includes("UNIQUE")) return res.status(400).json({ error: "Username taken" });
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.delete("/api/admins/:id", requireAuth, requireSuperAdmin, (req, res) => {
+  if (req.params.id == req.user.id) return res.status(400).json({ error: "Cannot delete yourself" });
+  db.prepare("DELETE FROM admins WHERE id = ?").run(req.params.id);
+  res.json({ success: true });
+});
+
+app.patch("/api/admins/:id", requireAuth, requireSuperAdmin, (req, res) => {
   const { username, password, role } = req.body;
   if (!username || !role) return res.status(400).json({ error: "Missing fields" });
   try {
