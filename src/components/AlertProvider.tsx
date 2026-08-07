@@ -6,7 +6,7 @@ import { toast, Toaster } from "sonner";
 
 export function AlertProvider({ children }: { children: React.ReactNode }) {
     useEffect(() => {
-        const socket = io();
+        const socket = io("/", { path: "/socket.io", transports: ["websocket", "polling"] });
 
         socket.on("new-alert", (data) => {
             toast.error(`0xALERT: ${data.hostname.toUpperCase()}`, {

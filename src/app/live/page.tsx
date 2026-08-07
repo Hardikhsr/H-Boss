@@ -42,7 +42,9 @@ export default function LiveView() {
         let mounted = true;
         const initSocket = async () => {
             const { io } = await import("socket.io-client");
-            const s = io({
+            const s = io("/", {
+                path: "/socket.io",
+                transports: ["websocket", "polling"],
                 reconnection: true,
                 reconnectionDelay: 2000,
                 reconnectionAttempts: Infinity

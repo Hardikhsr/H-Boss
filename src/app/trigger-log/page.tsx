@@ -59,7 +59,8 @@ export default function TriggerLogPage() {
 
     // Socket subscription for real-time trigger events
     useEffect(() => {
-        const socket = io();
+        const socket = io("/", { path: "/socket.io", transports: ["websocket", "polling"] });
+
         socket.on("trigger-event", (evt: any) => {
             toast.warning(`🚨 Trigger Fired: ${evt.trigger_type} on ${evt.hostname}`, {
                 description: evt.trigger_detail
